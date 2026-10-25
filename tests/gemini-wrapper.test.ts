@@ -9,7 +9,14 @@ vi.mock("@google/genai", () => ({
   },
 }));
 
-import { clearAICacheForTests, generateStructuredAI, isRetryableError } from "@/ai/gemini";
+import {
+  DEFAULT_AI_TIMEOUT_MS,
+  DEFAULT_AI_TOTAL_BUDGET_MS,
+  MAX_AI_ATTEMPTS,
+  clearAICacheForTests,
+  generateStructuredAI,
+  isRetryableError,
+} from "@/ai/gemini";
 
 const schema = z.object({ value: z.string() }).strict();
 const FAKE_KEY = "test-key-SECRET-12345";
@@ -86,7 +93,7 @@ describe("Gemini wrapper (gemini.ts) with the SDK mocked", () => {
     expect(logged).toContain("[redacted]");
   });
 
-  it("retries once on HTTP 429 and succeeds", async () => {
+  it("retries on HTTP 429 and succeeds", async () => {
     generateContentMock
       .mockRejectedValueOnce(apiError(429))
       .mockResolvedValueOnce({ text: '{"value":"second-try"}' });
@@ -95,14 +102,86 @@ describe("Gemini wrapper (gemini.ts) with the SDK mocked", () => {
     expect(generateContentMock).toHaveBeenCalledTimes(2);
   });
 
-  it("retries once on HTTP 500, then falls back if it fails again", async () => {
+  it("retries up to 3 attempts on HTTP 503, then falls back if it keeps failing", async () => {
     generateContentMock.mockRejectedValue(apiError(503));
     const res = await run("server-down");
     expect(res.source).toBe("offline_backup");
+    expect(generateContentMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("succeeds on the third attempt after two Gemini 'high demand' 503s", async () => {
+    generateContentMock
+      .mockRejectedValueOnce(apiError(503, "This model is currently experiencing high demand"))
+      .mockRejectedValueOnce(apiError(503, "This model is currently experiencing high demand"))
+      .mockResolvedValueOnce({ text: '{"value":"third-time-lucky"}' });
+    const res = await run("overloaded");
+    expect(res).toMatchObject({ source: "ai", cached: false, data: { value: "third-time-lucky" } });
+    expect(generateContentMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers from a timeout on the first attempt", async () => {
+    generateContentMock
+      .mockImplementationOnce(() => new Promise(() => undefined)) // never answers
+      .mockResolvedValueOnce({ text: '{"value":"after-timeout"}' });
+    const res = await run("timeout-then-ok", { timeoutMs: 20 });
+    expect(res).toMatchObject({ source: "ai", data: { value: "after-timeout" } });
     expect(generateContentMock).toHaveBeenCalledTimes(2);
   });
 
-  it("retries once on malformed JSON", async () => {
+  it("waits a little longer before each retry (short backoff)", async () => {
+    const times: number[] = [];
+    generateContentMock.mockImplementation(() => {
+      times.push(Date.now());
+      return Promise.reject(apiError(503));
+    });
+    await generateStructuredAI({
+      systemInstruction: "sys",
+      userPrompt: "backoff",
+      schema,
+      fallback: () => ({ value: "offline" }),
+      retryDelayMs: 40,
+    });
+    expect(times).toHaveLength(3);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(35);
+    expect(times[2] - times[1]).toBeGreaterThanOrEqual(70);
+  });
+
+  it("respects maxAttempts", async () => {
+    generateContentMock.mockRejectedValue(apiError(503));
+    await generateStructuredAI({
+      systemInstruction: "sys",
+      userPrompt: "one-shot",
+      schema,
+      fallback: () => ({ value: "offline" }),
+      retryDelayMs: 1,
+      maxAttempts: 1,
+    });
+    expect(generateContentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops retrying when the total time budget is used up", async () => {
+    generateContentMock.mockImplementation(
+      () => new Promise((_, reject) => setTimeout(() => reject(apiError(503)), 30))
+    );
+    const res = await generateStructuredAI({
+      systemInstruction: "sys",
+      userPrompt: "budget",
+      schema,
+      fallback: () => ({ value: "offline" }),
+      retryDelayMs: 1,
+      totalBudgetMs: 10, // less than the 3 second minimum for another attempt
+    });
+    expect(res.source).toBe("offline_backup");
+    expect(generateContentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a 20 second timeout by default", () => {
+    expect(DEFAULT_AI_TIMEOUT_MS).toBe(20000);
+    expect(MAX_AI_ATTEMPTS).toBe(3);
+    expect(DEFAULT_AI_TOTAL_BUDGET_MS).toBeLessThan(30000);
+  });
+
+  it("retries on malformed JSON", async () => {
     generateContentMock
       .mockResolvedValueOnce({ text: "this is not json" })
       .mockResolvedValueOnce({ text: '{"value":"fixed"}' });
@@ -111,11 +190,11 @@ describe("Gemini wrapper (gemini.ts) with the SDK mocked", () => {
     expect(generateContentMock).toHaveBeenCalledTimes(2);
   });
 
-  it("falls back when the JSON does not match the schema twice", async () => {
+  it("falls back when the JSON does not match the schema on every attempt", async () => {
     generateContentMock.mockResolvedValue({ text: '{"wrong":1}' });
     const res = await run("wrong-shape");
     expect(res.source).toBe("offline_backup");
-    expect(generateContentMock).toHaveBeenCalledTimes(2);
+    expect(generateContentMock).toHaveBeenCalledTimes(3);
   });
 
   it("retries on a network failure", async () => {
@@ -133,7 +212,7 @@ describe("Gemini wrapper (gemini.ts) with the SDK mocked", () => {
     });
     const res = await run("slow", { timeoutMs: 20 });
     expect(res.source).toBe("offline_backup");
-    expect(signals).toHaveLength(2);
+    expect(signals).toHaveLength(3);
     expect(signals.every((s) => s.aborted)).toBe(true);
   });
 

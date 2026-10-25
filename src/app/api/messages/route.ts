@@ -15,6 +15,9 @@ import { generateStructuredAI } from "@/ai/gemini";
 import { buildWhatsAppLink } from "@/lib/whatsapp";
 import type { AppLanguage } from "@/engine/types";
 
+/** Gemini can be slow or briefly overloaded: allow retries to finish (Vercel Hobby allows up to 60s). */
+export const maxDuration = 30;
+
 export async function POST(req: NextRequest) {
   try {
     const limited = enforceRateLimit(req, API_LIMIT);
