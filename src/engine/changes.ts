@@ -8,6 +8,7 @@ import { calculateGuestPlates } from "./guests";
 import { rebalanceBudget } from "./budget";
 import { checkCashInHand } from "./cash";
 import { getDaysRemaining, subtractDays } from "./timeline";
+import { lookupSubEvents } from "./subEvents";
 
 /**
  * Applies life changes to an event plan deterministically and creates Before/After preview.
@@ -56,14 +57,19 @@ export function previewLifeChanges(
       case "change_guests":
       case "add_guests": {
         const isAdd = act.action === "add_guests";
-        const targetSubEvents = act.subEventId
-          ? updatedPlan.subEvents.filter((se) => se.id === act.subEventId)
-          : updatedPlan.subEvents;
+        // The AI may give a program name ("Haldi") instead of its id: map it to the real program.
+        let targetSubEvents = updatedPlan.subEvents;
+        if (act.subEventId && act.subEventId.trim() !== "") {
+          const found = lookupSubEvents(updatedPlan, act.subEventId);
+          if (!found.ok) {
+            preview.plainSummaryMessages.push(found.message);
+            break;
+          }
+          targetSubEvents = updatedPlan.subEvents.filter((se) => found.ids.includes(se.id));
+        }
 
         if (targetSubEvents.length === 0) {
-          preview.plainSummaryMessages.push(
-            `Could not find program with ID "${act.subEventId}".`
-          );
+          preview.plainSummaryMessages.push("This plan has no programs to update.");
           break;
         }
 
@@ -329,17 +335,20 @@ export function previewLifeChanges(
           break;
         }
 
-        const idx = updatedPlan.subEvents.findIndex((se) => se.id === act.subEventId);
-        if (idx !== -1) {
-          const removed = updatedPlan.subEvents.splice(idx, 1)[0];
-          preview.plainSummaryMessages.push(
-            `Removed program "${removed.name}" from event plan.`
-          );
-        } else {
-          preview.plainSummaryMessages.push(
-            `Sub-event with ID "${act.subEventId}" not found.`
-          );
+        const found = lookupSubEvents(updatedPlan, act.subEventId);
+        if (!found.ok) {
+          preview.plainSummaryMessages.push(found.message);
+          break;
         }
+        if (found.ids.length !== 1) {
+          preview.plainSummaryMessages.push(
+            `"${act.subEventId}" matches more than one program, so nothing was removed. Please name the exact program.`
+          );
+          break;
+        }
+        const idx = updatedPlan.subEvents.findIndex((se) => se.id === found.ids[0]);
+        const removed = updatedPlan.subEvents.splice(idx, 1)[0];
+        preview.plainSummaryMessages.push(`Removed program "${removed.name}" from event plan.`);
         break;
       }
     }

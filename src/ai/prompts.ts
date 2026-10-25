@@ -78,7 +78,8 @@ Current Plan Context:
 - Title: ${plan.title}
 - Event Type: ${plan.type}
 - Total Budget: ₹${plan.totalBudget}
-- Sub-events: ${plan.subEvents.map((s) => `${s.name} (${s.guests.invited} invited)`).join(", ")}
+- Sub-events (programs). Each line is: id | name | guests invited:
+${plan.subEvents.map((s) => `  * ${s.id} | ${s.name} | ${s.guests.invited}`).join("\n")}
 - Categories: ${plan.budgetItems.map((b) => `${b.category} (₹${b.plannedAmount}${b.doNotCut ? " [LOCKED]" : ""})`).join(", ")}
 
 Recognized Action Types:
@@ -91,6 +92,13 @@ Recognized Action Types:
 - { action: "enter_real_shop_price", category: string, realPrice: number }
 - { action: "set_do_not_cut", category: string, doNotCut: boolean }
 - { action: "remove_sub_event", subEventId: string }
+
+RULES FOR subEventId:
+- subEventId MUST be copied exactly from the id column of the Sub-events list above (for example "${plan.subEvents[0]?.id ?? "custom-se-1"}"). Never use the program name.
+- If the user speaks about one program (Haldi, Sangeet, Shaadi / Wedding, Reception ...), use that program's id.
+- If the user says guests went from X to Y and only some programs currently have X invited, use only those programs' ids (one action per program).
+- If the user does not name a program and the change clearly applies to everyone, leave subEventId out.
+- Budget words: "8 lakh" = 800000, "50 hazar" = 50000.
 
 Return JSON format:
 {

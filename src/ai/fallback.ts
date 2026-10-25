@@ -12,6 +12,7 @@ import type {
 } from "./schemas";
 import { buildWhatsAppLink, formatINR } from "../lib/whatsapp";
 import { subtractDays } from "../engine/timeline";
+import { findMentionedSubEvents } from "../engine/subEvents";
 
 /**
  * Fallback parser for raw event briefs without requiring an AI call.
@@ -137,6 +138,71 @@ export function fallbackParseBrief(text: string, language: AppLanguage = "en"): 
   };
 }
 
+const GUEST_WORD = /guests?|log\b|logon|mehmaan|mehman|people|persons?|members|मेहमान|लोग/i;
+const AMOUNT_UNIT = "lakhs?|lacs?|lakh|lac|k\\b|hazar|hazaar|thousand";
+
+/** "6" + "lakh" -> 600000, "50" + "hazar" -> 50000, "600000" + undefined -> 600000. */
+function toRupees(num: string, unit: string | undefined): number | null {
+  const n = parseFloat(num);
+  if (!isFinite(n)) return null;
+  const u = (unit || "").toLowerCase();
+  if (/^(lakhs?|lacs?)$/.test(u)) return Math.round(n * 100000);
+  if (/^(k|hazar|hazaar|thousand)$/.test(u)) return Math.round(n * 1000);
+  // a bare number is only trusted as rupees when it is clearly a rupee amount
+  return n >= 1000 ? Math.round(n) : null;
+}
+
+/**
+ * Guest changes in plain Hinglish / English / Hindi:
+ *  "guests 250 se 180 ho gaye", "250 se 180 log", "guests 180 ho gaye", "40 log kam ho gaye".
+ * Returns null when the text is not clearly about a guest count.
+ */
+function parseGuestChange(lower: string): { count?: number; extra?: number; from?: number } | null {
+  if (!GUEST_WORD.test(lower)) return null;
+
+  // "250 se 180" (from -> to). Numbers followed by lakh / k / % belong to money, not guests.
+  const noUnit = `(?!\\s*(?:${AMOUNT_UNIT}|%))`;
+  const fromTo = lower.match(new RegExp(`(\\d+)${noUnit}\\s*(?:se|से|to|->|→)\\s*(\\d+)${noUnit}`, "i"));
+  if (fromTo) return { from: parseInt(fromTo[1], 10), count: parseInt(fromTo[2], 10) };
+
+  // "guests 180 ho gaye" / "180 guests ho gaye" / "180 log rahenge"
+  const verb = "(?:ho gaye|ho gaya|ho gayi|ho gaee|kar do|kardo|rahenge|aayenge|aaenge|final|rakho|karna hai|हो गए|हो गये|हो गया|हो गई)";
+  const absolute =
+    lower.match(new RegExp(`(?:${GUEST_WORD.source})\\s*(?:count\\s*)?(?:ab\\s*)?(\\d+)\\s*${verb}`, "i")) ||
+    lower.match(new RegExp(`(\\d+)\\s*(?:${GUEST_WORD.source})\\s*${verb}`, "i"));
+  if (absolute) return { count: parseInt(absolute[1], 10) };
+
+  // "40 log kam ho gaye" / "40 guests less"
+  const fewer =
+    lower.match(new RegExp(`(\\d+)\\s*(?:${GUEST_WORD.source})?\\s*(?:kam ho gaye|kam ho gaya|kam hue|kam hain|kam|less|fewer|cancel|कम)`, "i"));
+  if (fewer && !/budget|%/.test(lower)) return { extra: -parseInt(fewer[1], 10) };
+
+  return null;
+}
+
+/**
+ * Total budget changes: "budget 8 lakh se 6 lakh", "budget 6 lakh ho gaya", "budget ab 600000".
+ * Percent changes are handled elsewhere, so any text with "%" is skipped.
+ */
+function parseBudgetChange(lower: string): number | null {
+  if (!/budget|बजट/.test(lower) || lower.includes("%")) return null;
+
+  const unit = `(${AMOUNT_UNIT})?`;
+  const fromTo = lower.match(
+    new RegExp(`(?:budget|बजट)[^\\d%]{0,20}(\\d+(?:\\.\\d+)?)\\s*${unit}\\s*(?:se|से|to|->|→)\\s*(\\d+(?:\\.\\d+)?)\\s*${unit}`, "i")
+  );
+  if (fromTo) {
+    return toRupees(fromTo[3], fromTo[4] || fromTo[2]);
+  }
+
+  const verb = "(?:ho gaya|ho gayi|ho gaye|kar do|kardo|rakho|rakh do|final|ab)";
+  const absolute =
+    lower.match(new RegExp(`(?:budget|बजट)[^\\d%]{0,20}(\\d+(?:\\.\\d+)?)\\s*${unit}\\s*${verb}`, "i")) ||
+    lower.match(new RegExp(`(?:budget|बजट)\\s*(?:ab|now|new|naya)\\s*(\\d+(?:\\.\\d+)?)\\s*${unit}`, "i"));
+  if (absolute) return toRupees(absolute[1], absolute[2]);
+  return null;
+}
+
 /**
  * Fallback parser for "What Changed?" statements (supporting Hindi/Hinglish).
  */
@@ -148,22 +214,56 @@ export function fallbackParseChanges(
   const actions: ChangeAction[] = [];
   const notes: string[] = [];
 
-  // 1. "Add X guests" / "X log badh gaye"
-  const addMatch = lower.match(/(?:add|\+)\s*(\d+)\s*(?:guests?|log)?/i) ||
-    lower.match(/(\d+)\s*(?:guests?|log|people)?\s*(?:badh gaye|extra|aur aa gaye|more)/i);
+  // 1-2. Guests: "guests 250 se 180 ho gaye", "50 log badh gaye", "guests went to 300" ...
+  // If the text names a program (Haldi, Sangeet, Shaadi ...) the change is for that program only.
+  const mentioned = findMentionedSubEvents(currentPlan, text);
+  const guestChange = parseGuestChange(lower);
 
-  // 2. "Guests went to X" / "new guest count X"
-  const changeGuestMatch = lower.match(/(?:guests?(?:\s*count)?\s*(?:went to|became|is now|to))\s*(\d+)/i) ||
-    lower.match(/(?:ab|now)\s*(\d+)\s*(?:guests?|log)/i);
+  /** Which programs does a guest change apply to? [] means "all of them". */
+  const guestTargets = (fromCount?: number): string[] => {
+    const all = currentPlan.subEvents;
+    if (mentioned.length > 0 && mentioned.length < all.length) return mentioned.map((s) => s.id);
+    if (fromCount !== undefined) {
+      const same = all.filter((s) => s.guests.invited === fromCount);
+      if (same.length > 0 && same.length < all.length) return same.map((s) => s.id);
+    }
+    return [];
+  };
+  const targetNames = (ids: string[]) =>
+    ids.length === 0
+      ? "all programs"
+      : currentPlan.subEvents.filter((s) => ids.includes(s.id)).map((s) => s.name).join(", ");
 
-  if (addMatch && !changeGuestMatch) {
-    const extra = parseInt(addMatch[1], 10);
-    actions.push({ action: "add_guests", extraInvited: extra });
-    notes.push(`Added ${extra} extra guests.`);
-  } else if (changeGuestMatch) {
-    const count = parseInt(changeGuestMatch[1], 10);
-    actions.push({ action: "change_guests", newInvitedCount: count });
-    notes.push(`Updated total invited guests to ${count}.`);
+  if (guestChange && guestChange.count !== undefined) {
+    const ids = guestTargets(guestChange.from);
+    if (ids.length === 0) actions.push({ action: "change_guests", newInvitedCount: guestChange.count });
+    else for (const id of ids) actions.push({ action: "change_guests", subEventId: id, newInvitedCount: guestChange.count });
+    notes.push(`Updated invited guests to ${guestChange.count} for ${targetNames(ids)}.`);
+  } else if (guestChange && guestChange.extra !== undefined) {
+    const ids = guestTargets();
+    if (ids.length === 0) actions.push({ action: "add_guests", extraInvited: guestChange.extra });
+    else for (const id of ids) actions.push({ action: "add_guests", subEventId: id, extraInvited: guestChange.extra });
+    notes.push(`Reduced guests by ${Math.abs(guestChange.extra)} for ${targetNames(ids)}.`);
+  } else {
+    const addMatch = lower.match(/(?:add|\+)\s*(\d+)\s*(?:guests?|log)?/i) ||
+      lower.match(/(\d+)\s*(?:guests?|log|people)?\s*(?:badh gaye|extra|aur aa gaye|more)/i);
+
+    const changeGuestMatch = lower.match(/(?:guests?(?:\s*count)?\s*(?:went to|became|is now|to))\s*(\d+)/i) ||
+      lower.match(/(?:ab|now)\s*(\d+)\s*(?:guests?|log)/i);
+
+    if (addMatch && !changeGuestMatch) {
+      const extra = parseInt(addMatch[1], 10);
+      const ids = guestTargets();
+      if (ids.length === 0) actions.push({ action: "add_guests", extraInvited: extra });
+      else for (const id of ids) actions.push({ action: "add_guests", subEventId: id, extraInvited: extra });
+      notes.push(`Added ${extra} extra guests.`);
+    } else if (changeGuestMatch) {
+      const count = parseInt(changeGuestMatch[1], 10);
+      const ids = guestTargets();
+      if (ids.length === 0) actions.push({ action: "change_guests", newInvitedCount: count });
+      else for (const id of ids) actions.push({ action: "change_guests", subEventId: id, newInvitedCount: count });
+      notes.push(`Updated total invited guests to ${count}.`);
+    }
   }
 
   // 3. Move date: "move date 14 days earlier" / "postpone by 7 days"
@@ -197,10 +297,15 @@ export function fallbackParseChanges(
     notes.push(`Increased total budget by ${pct}%.`);
   }
 
-  // 5. Total budget update: "new total budget 800000"
+  // 5. Total budget update: "budget 8 lakh se 6 lakh", "new total budget 800000"
+  const hinglishBudget = parseBudgetChange(lower);
+  if (hinglishBudget !== null && hinglishBudget > 0) {
+    actions.push({ action: "change_total_budget", newTotalBudget: hinglishBudget });
+    notes.push(`Set new total budget to ₹${hinglishBudget.toLocaleString("en-IN")}.`);
+  }
   const newBudgetMatch = lower.match(/(?:total budget|new budget|budget is now)\s*(?:₹|rs\.?)?\s*(\d+)/i) ||
     lower.match(/(?:total budget|new budget)\s*(\d+(?:\.\d+)?)\s*lakh/i);
-  if (newBudgetMatch) {
+  if (newBudgetMatch && hinglishBudget === null) {
     const isLakh = newBudgetMatch[0].includes("lakh");
     const val = parseFloat(newBudgetMatch[1]);
     const budget = isLakh ? Math.round(val * 100000) : Math.round(val);
