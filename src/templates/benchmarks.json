@@ -1,0 +1,81 @@
+{
+  "_about": "Every number here is a typical estimate, to be verified against real quotes. Replace source and sourceNote once a real, dated source is checked. Each event type's budget shares add up to exactly 100% (the emergency buffer is fixed at the engine's 10%, and the other categories were proportionally rescaled to the remaining 90%, with any rounding remainder put on the largest category). The budget engine still normalises weights as a safety net.",
+  "cityMultipliers": {
+    "big_metro": {
+      "multiplier": 1.25,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    },
+    "medium_city": {
+      "multiplier": 1,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    },
+    "small_town": {
+      "multiplier": 0.8,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    }
+  },
+  "guestMetrics": {
+    "extraGuestBufferPct": {
+      "value": 0.15,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    },
+    "defaultHelperPlates": {
+      "value": 10,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    },
+    "catererConsumptionRange": {
+      "min": 0.85,
+      "max": 0.95,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    }
+  },
+  "typicalBudgetShares": {
+    "wedding": {
+      "foodAndCatering": 0.39,
+      "hallAndTent": 0.19,
+      "stageAndDecor": 0.09,
+      "photoAndVideo": 0.07,
+      "makeupAndClothes": 0.07,
+      "musicAndBand": 0.05,
+      "travelAndStay": 0.04,
+      "emergencyBuffer": 0.1,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    },
+    "birthday": {
+      "foodAndCake": 0.44,
+      "hallOrHomeTent": 0.14,
+      "balloonAndDecor": 0.14,
+      "returnGifts": 0.09,
+      "photosAndHost": 0.09,
+      "emergencyBuffer": 0.1,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    },
+    "colony_festival": {
+      "bhandaraFood": 0.4,
+      "pandalAndSound": 0.23,
+      "murtiAndPuja": 0.11,
+      "lightingAndGate": 0.09,
+      "culturalAndPrizes": 0.07,
+      "emergencyBuffer": 0.1,
+      "sourceNote": "Typical estimate, to be verified. No published source has been checked yet.",
+      "asOf": "2026-10",
+      "source": "typical estimate, to be verified"
+    }
+  }
+}
