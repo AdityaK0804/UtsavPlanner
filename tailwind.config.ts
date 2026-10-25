@@ -1,0 +1,76 @@
+import type { Config } from "tailwindcss";
+
+const config: Config = {
+  content: [
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        primary: "#111111",
+        "on-primary": "#ffffff",
+        canvas: "#ffffff",
+        "soft-cloud": "#f5f5f5",
+        ink: "#111111",
+        charcoal: "#39393b",
+        ash: "#4b4b4d",
+        mute: "#707072",
+        stone: "#9e9ea0",
+        hairline: "#cacacb",
+        "hairline-soft": "#e5e5e5",
+        sale: "#d30005",
+        "sale-deep": "#780700",
+        success: "#007d48",
+        "success-bright": "#1eaa52",
+        info: "#1151ff",
+        "info-deep": "#0034e3",
+        "utsav-gold": "#d97706",
+        "utsav-gold-light": "#fef3c7",
+        "utsav-marigold": "#f59e0b",
+      },
+      borderRadius: {
+        none: "0px",
+        sm: "18px",
+        md: "24px",
+        lg: "30px",
+        full: "9999px",
+        pill: "9999px",
+      },
+      spacing: {
+        xxs: "2px",
+        xs: "4px",
+        sm: "8px",
+        md: "12px",
+        lg: "18px",
+        xl: "24px",
+        xxl: "30px",
+        section: "48px",
+      },
+      fontFamily: {
+        display: [
+          "Futura",
+          "Helvetica Neue",
+          "Arial Black",
+          "system-ui",
+          "-apple-system",
+          "sans-serif",
+        ],
+        sans: [
+          "Helvetica Neue",
+          "Helvetica",
+          "Arial",
+          "system-ui",
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
+        ],
+      },
+    },
+  },
+  plugins: [],
+};
+export default config;
