@@ -14,7 +14,11 @@ import { buildChangeActionsPrompt } from "@/ai/prompts";
 import { fallbackParseChanges } from "@/ai/fallback";
 import { generateStructuredAI } from "@/ai/gemini";
 import { previewLifeChanges } from "@/engine/changes";
+import { resolveSubEventRefs } from "@/engine/subEvents";
 import type { ChangeAction } from "@/engine/types";
+
+/** Gemini can be slow or briefly overloaded: allow retries to finish (Vercel Hobby allows up to 60s). */
+export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
   try {
@@ -70,6 +74,10 @@ export async function POST(req: NextRequest) {
         cached = aiResult.cached ?? false;
       }
     }
+
+    // The AI sometimes answers with a program name ("Haldi") instead of its id: map it to the real program.
+    // Names that match nothing are kept, and the engine then tells the user plainly (see previewLifeChanges).
+    actions = resolveSubEventRefs(plan, actions);
 
     const { updatedPlan, preview } = previewLifeChanges(plan, actions, todayIso);
 

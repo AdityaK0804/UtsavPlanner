@@ -135,13 +135,28 @@ function describeError(err: unknown, apiKey: string): string {
   return `${name}${status}: ${message}`;
 }
 
+/** Default time allowed for ONE Gemini call. */
+export const DEFAULT_AI_TIMEOUT_MS = 20000;
+/** Calls per request: the first try plus up to 2 retries. */
+export const MAX_AI_ATTEMPTS = 3;
+/**
+ * All attempts together must finish before the Vercel function is stopped (routes set maxDuration = 30).
+ * Keep a few seconds spare for the offline fallback and the response.
+ */
+export const DEFAULT_AI_TOTAL_BUDGET_MS = 26000;
+
+/** An attempt needs at least this long to be worth starting. */
+const MIN_ATTEMPT_MS = 3000;
+
 export interface AIOptions<T> {
   systemInstruction: string;
   userPrompt: string;
   schema: z.ZodType<T>;
   fallback: () => T;
-  timeoutMs?: number; // default 12000
-  retryDelayMs?: number; // default 300
+  timeoutMs?: number; // default 20000, per attempt
+  retryDelayMs?: number; // default 400; the wait before attempt 3 is double
+  maxAttempts?: number; // default 3
+  totalBudgetMs?: number; // default 26000, across all attempts
 }
 
 export interface AIResult<T> {
@@ -155,14 +170,25 @@ export interface AIResult<T> {
  * Universal Gemini Wrapper for UtsavRipple:
  * - Server-only execution
  * - In-memory SHA-256 LRU cache (cached answers are flagged `cached: true`)
- * - 12-second AbortController timeout, wired to the real request
+ * - 20-second AbortController timeout per attempt, wired to the real request
  * - Code-fence stripping
  * - Strict Zod schema validation
- * - 1 automatic retry, only for timeouts, malformed JSON, network errors, HTTP 429 and 5xx
+ * - Up to 3 attempts with a short growing wait, only for timeouts, malformed JSON, network errors,
+ *   HTTP 429 and 5xx (Gemini "high demand" 503s are usually gone a second later)
+ * - A total time budget so every attempt still finishes inside the serverless function limit
  * - Graceful fallback to the offline rule-based engine
  */
 export async function generateStructuredAI<T>(options: AIOptions<T>): Promise<AIResult<T>> {
-  const { systemInstruction, userPrompt, schema, fallback, timeoutMs = 12000, retryDelayMs = 300 } = options;
+  const {
+    systemInstruction,
+    userPrompt,
+    schema,
+    fallback,
+    timeoutMs = DEFAULT_AI_TIMEOUT_MS,
+    retryDelayMs = 400,
+    maxAttempts = MAX_AI_ATTEMPTS,
+    totalBudgetMs = DEFAULT_AI_TOTAL_BUDGET_MS,
+  } = options;
 
   const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
@@ -178,9 +204,17 @@ export async function generateStructuredAI<T>(options: AIOptions<T>): Promise<AI
     return { data: fallback(), source: "offline_backup", cached: false };
   }
 
-  // 2. Execute with 1 automatic retry (only when a retry can help)
-  const maxAttempts = 2;
+  // 2. Execute with automatic retries (only when a retry can help)
+  const startedAt = Date.now();
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const remaining = totalBudgetMs - (Date.now() - startedAt);
+    // Never start an attempt that cannot finish inside the total budget.
+    if (attempt > 1 && remaining < MIN_ATTEMPT_MS) {
+      console.warn("[Gemini Final Failure]: Out of time for another attempt. Falling back to the offline engine.");
+      break;
+    }
+    const attemptTimeout = Math.max(1, Math.min(timeoutMs, remaining));
+
     const controller = new AbortController();
     try {
       const ai = new GoogleGenAI({ apiKey });
@@ -197,7 +231,7 @@ export async function generateStructuredAI<T>(options: AIOptions<T>): Promise<AI
       // If the timeout wins the race, the SDK's later rejection must not become an unhandled rejection.
       generatePromise.catch(() => undefined);
 
-      const response = await callWithTimeout(generatePromise, timeoutMs, controller);
+      const response = await callWithTimeout(generatePromise, attemptTimeout, controller);
       const rawText = response.text || "";
       const cleaned = stripCodeFences(rawText);
 
@@ -209,8 +243,11 @@ export async function generateStructuredAI<T>(options: AIOptions<T>): Promise<AI
     } catch (err) {
       const canRetry = isRetryableError(err);
       if (canRetry && attempt < maxAttempts) {
-        console.warn(`[Gemini Attempt ${attempt} Failed]: Retrying once...`, describeError(err, apiKey));
-        await new Promise((r) => setTimeout(r, retryDelayMs));
+        console.warn(
+          `[Gemini Attempt ${attempt} of ${maxAttempts} Failed]: Retrying...`,
+          describeError(err, apiKey)
+        );
+        await new Promise((r) => setTimeout(r, retryDelayMs * attempt));
         continue;
       }
       console.warn(
